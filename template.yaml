@@ -1,0 +1,199 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: CRUD serverless with SAM. by Nikole Rocha (probe)
+
+
+Globals:
+  Function:
+      MemorySize: 128
+      Runtime: python3.7
+      Timeout: 60
+      Environment:
+        Variables:
+          TABLE_NAME: CustomerDetails
+          #Recordar cambiar region y Account ID por los de su cuenta
+          DB_AURORA: !Sub arn:aws:rds:{AWS::REGION}:{ACCOUNT_ID}:cluster:${AuroraServerlessCluster}
+          SECRET_ARN: !Ref SecretAuroraInstanceAttachment 
+
+
+
+Resources:
+  #se crea el secreto para asociarlo con el cluster de Aurora Serverless
+  MySecretAuroraServerless:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      #cambiar nombre del secreto por uno personalizado
+      Name: 'DBSecret-name'
+      Description: 'Secret with dynamically generated password.'
+      GenerateSecretString:
+        RequireEachIncludedType: True
+        SecretStringTemplate: '{"username": "admin_user"}'
+        GenerateStringKey: 'password'
+        PasswordLength: 25
+        ExcludePunctuation: True
+
+  #se crea el cluster de Aurora Serverless llamado "aurora-sam"
+  AuroraServerlessCluster:
+    Type: 'AWS::RDS::DBCluster'
+    Properties:
+      MasterUsername: !Join ['', ['{{resolve:secretsmanager:', !Ref MySecretAuroraServerless, ':SecretString:username}}' ]]
+      MasterUserPassword: !Join ['', ['{{resolve:secretsmanager:', !Ref MySecretAuroraServerless, ':SecretString:password}}' ]]
+      #cambiar por un identificador personalizado
+      DBClusterIdentifier: aurora-sam
+      DatabaseName: Auroradb
+      EnableHttpEndpoint: True
+      Engine: aurora
+      EngineVersion: 5.6.10a
+      EngineMode: serverless
+      ScalingConfiguration:
+        AutoPause: true
+        MinCapacity: 1
+        MaxCapacity: 4
+        SecondsUntilAutoPause: 300
+
+  #finalmente, se asocia el secreto con el cluster de Aurora Serverless, el cual será utilizado 
+  #para la policy que tendran las funciones lambda
+  SecretAuroraInstanceAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+        SecretId: !Ref MySecretAuroraServerless
+        TargetId: !Ref AuroraServerlessCluster
+        TargetType: AWS::RDS::DBCluster
+
+  #creacion de los recursos que utilizará API Gateway 
+  ApiGatewayApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: "Users"
+      StageName: prod
+      Models:
+        items:
+          type: object
+          properties:
+            id:
+              type: string
+            FirstName:
+              type: string
+            LastName:
+              type: string
+            Email:
+              type: string
+        
+
+
+  #UserModel:
+   # Type: AWS::ApiGateway::Model
+    #Properties:
+     # RestApiId: !Ref ApiGatewayApi 
+      #ContentType: application/json
+      #Description: Schema for POST and PATCH to putuserData and UpdateuserData functions
+      #Name: User
+      #Schema:
+       # $schema: 'http://json-schema.org/draft-04/schema#'
+       # title: UserModel
+       # type: array
+       # items:
+       #   type: object
+       #   properties:
+       #     id:
+       #       type: string
+       #     FirstName:
+       #       type: string
+       #     LastName:
+       #       type: string
+       #     Email:
+       #       type: string
+
+
+  #A continuacion se definen las funciones lambda para las operaciones del CRUD Con sus respectivos
+  #API Gateway triggers
+  getUser:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: getU-sam.lambda_handler
+      Policies:
+        - AmazonRDSDataFullAccess
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref SecretAuroraInstanceAttachment
+      Events:
+        GetEvent:
+          Type: Api
+          Properties: 
+            Path: /users
+            Method: get 
+            RestApiId:
+              Ref: ApiGatewayApi
+
+  
+  putUserNR:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: putU-sam.lambda_handler
+      Policies:
+        - AmazonRDSDataFullAccess
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref SecretAuroraInstanceAttachment
+      Events:
+        PutEvent:
+          Type: Api
+          Properties: 
+            Path: /users
+            Method: post
+            RestApiId:
+              Ref: ApiGatewayApi
+            RequestModel:
+              Model: items
+              Required: true
+            
+
+  updateUserNR:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: updateU-sam.lambda_handler
+      Policies:
+        - AmazonRDSDataFullAccess
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref SecretAuroraInstanceAttachment
+      Events:
+        UpdateEvent:
+          Type: Api
+          Properties: 
+            Path: /users/{id}
+            Method: patch
+            RestApiId:
+              Ref: ApiGatewayApi
+            RequestModel:
+              Model: items
+              Required: true
+            
+
+  deleteUserNR:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: deleteU-sam.lambda_handler
+      Policies:
+        - AmazonRDSDataFullAccess
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref SecretAuroraInstanceAttachment
+      Events:
+        DeleteEvent:
+          Type: Api
+          Properties: 
+            Path: /users/{id}
+            Method: delete
+            RestApiId:
+              Ref: ApiGatewayApi
+
+  #finalmente, se crea el bucket donde se aloja el website
+  serverBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: PublicRead
+      BucketName: serverbucket
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+
+
+
+
